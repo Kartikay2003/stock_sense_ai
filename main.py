@@ -43,29 +43,43 @@ class LocalStockForecaster:
         self.scaler = joblib.load(self.scaler_file)
 
     def download_stock_data(self, ticker):
-        # We use the Ticker object which is more robust for cloud IPs
-        stock = yf.Ticker(ticker)
+        try:
+            # ATTEMPT 1: Try yfinance
+            stock = yf.Ticker(ticker)
+            raw = stock.history(period="max")
 
-        # Try to get history. This uses yfinance's internal
-        # browser impersonation (requires curl_cffi in requirements.txt)
-        raw = stock.history(period="max")
+            if raw is None or raw.empty:
+                raise ValueError("yfinance returned empty data")
 
-        # If history() fails, try the standard download as a backup
-        if raw is None or raw.empty:
-            raw = yf.download(ticker, period="max", progress=False)
+            df = raw.copy()
+            df['Price'] = df['Close']
 
-        if raw is None or raw.empty:
-            raise RuntimeError(f"No data found for ticker {ticker}. Yahoo might be rate-limiting the server IP.")
+        except Exception as e:
+            print(f"yfinance blocked by Yahoo ({e}). Falling back to Stooq API...")
 
-        df = raw.copy()
+            # ATTEMPT 2: The Stooq Fallback (Completely bypasses Yahoo)
+            # Format ticker for Stooq (e.g., AAPL -> AAPL.US)
+            stooq_ticker = ticker.upper()
+            if "." not in stooq_ticker:
+                stooq_ticker += ".US"
 
-        # Handle the price column (Ticker.history uses 'Close', not 'Adj Close')
-        df['Price'] = df['Close']
-        df['Volume'] = df['Volume'].fillna(0)
+            url = f"https://stooq.com/q/d/l/?s={stooq_ticker}&i=d"
+
+            # Read directly from the URL using pandas
+            df = pd.read_csv(url, index_col="Date", parse_dates=True)
+
+            if df is None or df.empty or 'Close' not in df.columns:
+                raise RuntimeError(f"Complete failure: Could not fetch {ticker} from Yahoo or Stooq.")
+
+            df['Price'] = df['Close']
+
+        # Clean and finalize formatting for the AI model
+        df['Volume'] = df['Volume'].fillna(0) if 'Volume' in df.columns else 0
         df['Sentiment'] = 0.0
-
         df = df[['Price', 'Volume', 'Sentiment']]
         df.index = pd.to_datetime(df.index)
+
+        # Ensure it's sorted oldest to newest
         return df.sort_index()
 
     def _prepare_sequences(self, df):
