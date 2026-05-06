@@ -43,24 +43,27 @@ class LocalStockForecaster:
         self.scaler = joblib.load(self.scaler_file)
 
     def download_stock_data(self, ticker):
-        # We let yfinance handle impersonation internally to bypass Yahoo's latest bot detection
-        raw = yf.download(ticker, period="max", progress=False)
+        # We use the Ticker object which is more robust for cloud IPs
+        stock = yf.Ticker(ticker)
+
+        # Try to get history. This uses yfinance's internal
+        # browser impersonation (requires curl_cffi in requirements.txt)
+        raw = stock.history(period="max")
+
+        # If history() fails, try the standard download as a backup
+        if raw is None or raw.empty:
+            raw = yf.download(ticker, period="max", progress=False)
 
         if raw is None or raw.empty:
-            raise RuntimeError(f"No data found for ticker {ticker}.")
+            raise RuntimeError(f"No data found for ticker {ticker}. Yahoo might be rate-limiting the server IP.")
 
         df = raw.copy()
 
-        # Handle cases where yfinance returns MultiIndex columns
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-
-        # Standardize columns
-        df['Price'] = df['Adj Close'] if 'Adj Close' in df.columns else df['Close']
-        df['Volume'] = df['Volume'].fillna(0) if 'Volume' in df.columns else 0
+        # Handle the price column (Ticker.history uses 'Close', not 'Adj Close')
+        df['Price'] = df['Close']
+        df['Volume'] = df['Volume'].fillna(0)
         df['Sentiment'] = 0.0
 
-        # Clean and sort
         df = df[['Price', 'Volume', 'Sentiment']]
         df.index = pd.to_datetime(df.index)
         return df.sort_index()

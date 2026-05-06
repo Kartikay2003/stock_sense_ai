@@ -1,8 +1,10 @@
+fastapi
+uvicorn
 pandas
 numpy
 yfinance
-scikit-learn==1.7.2
 tensorflow
 keras
-fastapi
-uvicorn
+joblib
+scikit-learn
+curl_cffi
