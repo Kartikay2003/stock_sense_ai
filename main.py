@@ -1,3 +1,4 @@
+import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
@@ -40,8 +41,14 @@ class LocalStockForecaster:
         self.scaler = joblib.load(self.scaler_file)
 
     def download_stock_data(self, ticker):
-        # We let yfinance handle the session natively to bypass rate limits
-        raw = yf.download(ticker, period="max", progress=False)
+        # 1. Create a custom session to disguise the server as a normal web browser
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        })
+
+        # 2. Pass the disguised session to yfinance
+        raw = yf.download(ticker, period="max", progress=False, session=session)
 
         if raw is None or raw.empty:
             raise RuntimeError(f"No data found for ticker {ticker}.")
