@@ -1,4 +1,3 @@
-import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
@@ -41,15 +40,8 @@ class LocalStockForecaster:
         self.scaler = joblib.load(self.scaler_file)
 
     def download_stock_data(self, ticker):
-        # 1. Create a session and set a "User-Agent" to trick Yahoo Finance
-        # This makes Render look like a normal Google Chrome browser instead of a bot
-        session = requests.Session()
-        session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        })
-
-        # 2. Pass that session into yf.download
-        raw = yf.download(ticker, period="max", progress=False, session=session)
+        # We let yfinance handle the session natively to bypass rate limits
+        raw = yf.download(ticker, period="max", progress=False)
 
         if raw is None or raw.empty:
             raise RuntimeError(f"No data found for ticker {ticker}.")
