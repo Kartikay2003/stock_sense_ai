@@ -12,12 +12,14 @@ import keras
 from keras import backend as K
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
+# 1. Register custom objects for Keras loading
 @keras.saving.register_keras_serializable(package="Custom")
 def rmse(y_true, y_pred):
     return K.sqrt(K.mean(K.square(y_pred - y_true)))
 
 app = FastAPI()
 
+# 2. CORS CONFIGURATION: This allows your Vercel site to access this API
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -36,21 +38,29 @@ class LocalStockForecaster:
         if not os.path.exists(self.model_file) or not os.path.exists(self.scaler_file):
             raise FileNotFoundError("Model or Scaler file missing from the directory.")
 
+        # Load model without compiling to avoid issues with custom metrics during init
         self.model = load_model(self.model_file, compile=False)
         self.scaler = joblib.load(self.scaler_file)
 
     def download_stock_data(self, ticker):
-        # We stop setting the session manually and let yfinance
-        # handle the 'chrome impersonation' internally as requested.
+        # We let yfinance handle impersonation internally to bypass Yahoo's latest bot detection
         raw = yf.download(ticker, period="max", progress=False)
 
         if raw is None or raw.empty:
             raise RuntimeError(f"No data found for ticker {ticker}.")
 
         df = raw.copy()
+
+        # Handle cases where yfinance returns MultiIndex columns
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        # Standardize columns
         df['Price'] = df['Adj Close'] if 'Adj Close' in df.columns else df['Close']
         df['Volume'] = df['Volume'].fillna(0) if 'Volume' in df.columns else 0
         df['Sentiment'] = 0.0
+
+        # Clean and sort
         df = df[['Price', 'Volume', 'Sentiment']]
         df.index = pd.to_datetime(df.index)
         return df.sort_index()
@@ -71,6 +81,7 @@ class LocalStockForecaster:
         split = max(int(len(X) * 0.8), 1)
         X_test, y_test = X[split:], y[split:]
 
+        # Test set predictions for metrics
         pred_scaled_test = self.model.predict(X_test, verbose=0).reshape(-1, 1)
         other_test = X_test[:, -1, 1:]
         inv_pred_test = self.scaler.inverse_transform(np.hstack([pred_scaled_test, other_test]))[:, 0]
@@ -84,20 +95,27 @@ class LocalStockForecaster:
         else:
             direction_acc = 0.0
 
+        # Recursive future forecasting
         seq = X_test[-1].copy() if len(X_test) else X[-1].copy()
         future_scaled = []
         for _ in range(days):
             p_scaled = self.model.predict(seq[np.newaxis, :, :], verbose=0)[0, 0]
             future_scaled.append(p_scaled)
+            # Update sequence: shift values and append new prediction
             seq = np.vstack([seq[1:], np.hstack([[p_scaled], seq[-1, 1:]])])
 
+        # Inverse transform future predictions
         future_other = np.tile(seq[-1, 1:], (days, 1))
         inv_future = self.scaler.inverse_transform(np.hstack([np.array(future_scaled).reshape(-1,1), future_other]))[:, 0]
 
         future_dates = pd.date_range(df.index[-1] + timedelta(days=1), periods=days)
         forecast_df = pd.DataFrame({"Date": future_dates, "Predicted_Price": np.round(inv_future, 2)})
 
-        metrics = {"MAE": float(np.round(mae, 4)), "RMSE": float(np.round(rmse_val, 4)), "Direction_Accuracy": float(np.round(direction_acc, 2))}
+        metrics = {
+            "MAE": float(np.round(mae, 4)),
+            "RMSE": float(np.round(rmse_val, 4)),
+            "Direction_Accuracy": float(np.round(direction_acc, 2))
+        }
         return forecast_df, df, metrics
 
 @app.get("/api/predict")
@@ -106,25 +124,29 @@ def predict_stock(ticker: str, days: int = 10, seq_len: int = 60):
         forecaster = LocalStockForecaster(seq_len=seq_len)
         forecast_df, history_df, metrics = forecaster.predict_future(ticker, days=days)
 
-        # Bullet-proof extraction of the current price
+        # Extract current price safely
         cp = history_df['Price'].iloc[-1]
-        if isinstance(cp, pd.Series):
-            cp = cp.iloc[0]
-        current_price = float(cp)
+        current_price = float(cp.iloc[0]) if isinstance(cp, pd.Series) else float(cp)
 
-        # Bullet-proof extraction of the historical prices for the chart
+        # Format historical data (last 30 days)
         hist_data = []
         for date, row in history_df.tail(30).iterrows():
             p = row['Price']
-            if isinstance(p, pd.Series):
-                p = p.iloc[0]
+            price_val = float(p.iloc[0]) if isinstance(p, pd.Series) else float(p)
             hist_data.append({
                 "date": date.strftime("%Y-%m-%d"),
-                "price": float(p),
+                "price": price_val,
                 "type": "History"
             })
 
-        forecast_data = [{"date": row['Date'].strftime("%Y-%m-%d"), "price": float(row['Predicted_Price']), "type": "Forecast"} for _, row in forecast_df.iterrows()]
+        # Format forecast data
+        forecast_data = [
+            {
+                "date": row['Date'].strftime("%Y-%m-%d"),
+                "price": float(row['Predicted_Price']),
+                "type": "Forecast"
+            } for _, row in forecast_df.iterrows()
+        ]
 
         return {
             "ticker": ticker.upper(),
@@ -134,5 +156,5 @@ def predict_stock(ticker: str, days: int = 10, seq_len: int = 60):
         }
     except Exception as e:
         import traceback
-        traceback.print_exc() # This will print exact errors to your terminal if it ever fails again!
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
