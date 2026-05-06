@@ -1,7 +1,7 @@
 pandas
 numpy
 yfinance
-scikit-learn
+scikit-learn==1.7.2
 tensorflow
 keras
 fastapi
